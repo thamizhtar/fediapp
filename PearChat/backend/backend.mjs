@@ -3,8 +3,13 @@
 
 const { IPC } = BareKit
 
-// Import P2P modules (these would be bundled in production)
-// For now, we'll simulate the P2P functionality
+// Import real P2P modules
+import Hyperswarm from 'hyperswarm'
+import Corestore from 'corestore'
+import Autobase from 'autobase'
+import Hyperbee from 'hyperbee'
+import crypto from 'hypercore-crypto'
+import b4a from 'b4a'
 
 // Application state
 const state = {
@@ -13,7 +18,9 @@ const state = {
   messages: new Map(),
   peers: new Map(),
   swarm: null,
+  corestore: null,
   autobase: null,
+  keyPair: null,
   isReady: false
 }
 
@@ -40,22 +47,24 @@ const RPC_COMMANDS = {
 async function initializeP2P() {
   try {
     // Generate or load user keypair
-    const keyPair = generateKeyPair()
+    state.keyPair = crypto.keyPair()
 
     // Initialize user profile
     state.profile = {
-      publicKey: keyPair.publicKey.toString('hex'),
+      publicKey: state.keyPair.publicKey.toString('hex'),
       displayName: 'P2P User',
       createdAt: Date.now(),
       updatedAt: Date.now()
     }
 
-    // Initialize Hyperswarm (simulated for now)
-    state.swarm = createMockSwarm(keyPair)
+    // Initialize Corestore for data storage
+    state.corestore = new Corestore('./data')
+
+    // Initialize Hyperswarm for P2P networking
+    state.swarm = new Hyperswarm()
 
     // Set up event handlers
     state.swarm.on('connection', handlePeerConnection)
-    state.swarm.on('peer-discovery', handlePeerDiscovery)
 
     state.isReady = true
     console.log('P2P backend initialized with public key:', state.profile.publicKey)
@@ -67,70 +76,60 @@ async function initializeP2P() {
   }
 }
 
-// Generate a mock keypair (in production, this would use real crypto)
-function generateKeyPair() {
-  const publicKey = Buffer.from('demo-pubkey-' + Date.now() + Math.random().toString(36))
-  const secretKey = Buffer.from('demo-seckey-' + Date.now() + Math.random().toString(36))
-  return { publicKey, secretKey }
-}
+// Create Autobase for a chat room
+async function createChatAutobase(chatId) {
+  try {
+    const topic = b4a.from(chatId, 'hex')
 
-// Create mock Hyperswarm instance
-function createMockSwarm(keyPair) {
-  const EventEmitter = {
-    listeners: {},
-    on(event, callback) {
-      if (!this.listeners[event]) this.listeners[event] = []
-      this.listeners[event].push(callback)
-    },
-    emit(event, ...args) {
-      if (this.listeners[event]) {
-        this.listeners[event].forEach(callback => callback(...args))
-      }
-    }
-  }
+    // Create a local writer core
+    const localWriter = state.corestore.get({ name: `chat-${chatId}-local` })
+    await localWriter.ready()
 
-  return {
-    ...EventEmitter,
-    keyPair,
-    connections: new Set(),
-    topics: new Set(),
+    // Create autobase with the local writer
+    const autobase = new Autobase([localWriter], {
+      input: localWriter,
+      eagerUpdate: true
+    })
 
-    join(topic) {
-      this.topics.add(topic.toString('hex'))
-      console.log('Joined topic:', topic.toString('hex'))
+    await autobase.ready()
 
-      // Simulate peer discovery after a delay
-      setTimeout(() => {
-        this.emit('peer-discovery', {
-          publicKey: Buffer.from('peer-' + Math.random().toString(36)),
-          topic: topic.toString('hex')
-        })
-      }, 1000)
-    },
+    // Set up autobase listener for real-time updates
+    await setupAutobaseListener(chatId, autobase)
 
-    leave(topic) {
-      this.topics.delete(topic.toString('hex'))
-      console.log('Left topic:', topic.toString('hex'))
-    }
+    // Set up peer replication
+    state.swarm.on('connection', (connection) => {
+      console.log('New peer connected for chat:', chatId)
+      autobase.replicate(connection)
+    })
+
+    // Join the swarm topic for this chat
+    const discovery = state.swarm.join(topic, { server: true, client: true })
+    await discovery.flushed()
+
+    console.log('Created autobase for chat:', chatId)
+    return autobase
+  } catch (error) {
+    console.error('Failed to create chat autobase:', error)
+    throw error
   }
 }
 
 // Handle peer connections
-function handlePeerConnection(peer) {
-  console.log('Peer connected:', peer.publicKey?.toString('hex'))
+function handlePeerConnection(connection, info) {
+  console.log('Peer connected:', info.publicKey?.toString('hex'))
 
-  const peerKey = peer.publicKey?.toString('hex') || 'unknown-peer'
+  const peerKey = info.publicKey?.toString('hex') || `peer-${Date.now()}`
   state.peers.set(peerKey, {
     publicKey: peerKey,
     isOnline: true,
     lastSeen: Date.now(),
-    connection: peer
+    connection: connection
   })
 
   sendEvent(RPC_COMMANDS.PEER_CONNECTED, { publicKey: peerKey })
 
   // Set up message handling for this peer
-  peer.on('data', (data) => {
+  connection.on('data', (data) => {
     try {
       const message = JSON.parse(data.toString())
       handlePeerMessage(peerKey, message)
@@ -139,7 +138,7 @@ function handlePeerConnection(peer) {
     }
   })
 
-  peer.on('close', () => {
+  connection.on('close', () => {
     console.log('Peer disconnected:', peerKey)
     if (state.peers.has(peerKey)) {
       state.peers.get(peerKey).isOnline = false
@@ -147,27 +146,41 @@ function handlePeerConnection(peer) {
     }
     sendEvent(RPC_COMMANDS.PEER_DISCONNECTED, { publicKey: peerKey })
   })
+
+  connection.on('error', (error) => {
+    console.error('Peer connection error:', error)
+  })
 }
 
-// Handle peer discovery
-function handlePeerDiscovery(peerInfo) {
-  console.log('Discovered peer:', peerInfo.publicKey.toString('hex'))
-
-  // Simulate connection establishment
-  setTimeout(() => {
-    const mockPeer = {
-      publicKey: peerInfo.publicKey,
-      write: (data) => console.log('Sending to peer:', data.toString()),
-      on: (event, callback) => {
-        // Mock event handling
-        if (event === 'close') {
-          setTimeout(callback, 5000 + Math.random() * 10000) // Random disconnect
-        }
-      }
+// Send message to autobase
+async function sendMessageToAutobase(chatId, message) {
+  try {
+    if (!state.chats.has(chatId)) {
+      throw new Error('Chat not found')
     }
 
-    handlePeerConnection(mockPeer)
-  }, 500)
+    const chat = state.chats.get(chatId)
+    if (!chat.autobase) {
+      throw new Error('Chat autobase not initialized')
+    }
+
+    // Append message to autobase
+    const messageData = {
+      type: 'message',
+      id: message.id,
+      content: message.content,
+      author: message.author,
+      authorName: message.authorName,
+      timestamp: message.timestamp,
+      chatId: message.chatId
+    }
+
+    await chat.autobase.append(JSON.stringify(messageData))
+    console.log('Message sent to autobase:', message.id)
+  } catch (error) {
+    console.error('Failed to send message to autobase:', error)
+    throw error
+  }
 }
 
 // Handle messages from peers
@@ -196,30 +209,49 @@ function handlePeerMessage(peerKey, message) {
   }
 }
 
-// Broadcast message to all connected peers
-function broadcastMessageToPeers(message) {
-  const peerMessage = {
-    type: 'chat-message',
-    id: message.id,
-    content: message.content,
-    author: message.author,
-    authorName: message.authorName,
-    timestamp: message.timestamp,
-    chatId: message.chatId
-  }
-
-  const messageData = JSON.stringify(peerMessage)
-
-  state.peers.forEach((peer, peerKey) => {
-    if (peer.isOnline && peer.connection) {
+// Listen for autobase updates and sync messages
+async function setupAutobaseListener(chatId, autobase) {
+  try {
+    autobase.on('append', async () => {
       try {
-        peer.connection.write(Buffer.from(messageData))
-        console.log('Sent message to peer:', peerKey)
+        // Read new messages from autobase
+        const length = autobase.length
+        const lastIndex = state.messages.get(chatId)?.length || 0
+
+        for (let i = lastIndex; i < length; i++) {
+          const block = await autobase.get(i)
+          if (block) {
+            const messageData = JSON.parse(block.toString())
+
+            // Only process messages from other peers
+            if (messageData.author !== state.profile?.publicKey) {
+              const message = {
+                id: messageData.id,
+                content: messageData.content,
+                author: messageData.author,
+                authorName: messageData.authorName,
+                timestamp: messageData.timestamp,
+                type: messageData.type || 'text',
+                chatId: messageData.chatId
+              }
+
+              if (!state.messages.has(chatId)) {
+                state.messages.set(chatId, [])
+              }
+              state.messages.get(chatId).push(message)
+
+              // Notify UI of new message
+              sendEvent(RPC_COMMANDS.MESSAGE_RECEIVED, message)
+            }
+          }
+        }
       } catch (error) {
-        console.error('Failed to send message to peer:', peerKey, error)
+        console.error('Failed to process autobase update:', error)
       }
-    }
-  })
+    })
+  } catch (error) {
+    console.error('Failed to setup autobase listener:', error)
+  }
 }
 
 // Send response back to React Native
@@ -265,7 +297,7 @@ async function handleRequest(request) {
         break
 
       case RPC_COMMANDS.CREATE_CHAT:
-        const newChatId = 'chat-' + Date.now()
+        const newChatId = crypto.randomBytes(32).toString('hex')
         const newChat = {
           id: newChatId,
           name: data.name || 'New Chat',
@@ -273,82 +305,105 @@ async function handleRequest(request) {
           createdAt: Date.now(),
           isGroup: (data.participants?.length || 1) > 2
         }
-        state.chats.set(newChatId, newChat)
-        state.messages.set(newChatId, [])
 
-        // Join the chat topic for P2P discovery
-        if (state.swarm) {
-          const topic = Buffer.from(newChatId)
-          state.swarm.join(topic)
+        // Create autobase for this chat
+        try {
+          newChat.autobase = await createChatAutobase(newChatId)
+          state.chats.set(newChatId, newChat)
+          state.messages.set(newChatId, [])
+          sendResponse(true, newChat, null, id)
+        } catch (error) {
+          sendResponse(false, null, `Failed to create chat: ${error.message}`, id)
         }
-
-        sendResponse(true, newChat, null, id)
         break
 
       case RPC_COMMANDS.JOIN_CHAT:
         const joinChatId = data.chatId
-        if (!state.chats.has(joinChatId)) {
-          // Create the chat if it doesn't exist
-          const demoChat = {
-            id: joinChatId,
-            name: 'P2P Chat',
-            participants: [state.profile?.publicKey],
-            createdAt: Date.now(),
-            isGroup: false
+        try {
+          if (!state.chats.has(joinChatId)) {
+            // Create the chat if it doesn't exist
+            const joinChat = {
+              id: joinChatId,
+              name: 'P2P Chat',
+              participants: [state.profile?.publicKey],
+              createdAt: Date.now(),
+              isGroup: false
+            }
+
+            // Create autobase for this chat
+            joinChat.autobase = await createChatAutobase(joinChatId)
+            state.chats.set(joinChatId, joinChat)
+            state.messages.set(joinChatId, [])
+          } else {
+            // Join existing chat's swarm topic
+            const topic = b4a.from(joinChatId, 'hex')
+            const discovery = state.swarm.join(topic, { server: true, client: true })
+            await discovery.flushed()
           }
-          state.chats.set(joinChatId, demoChat)
-          state.messages.set(joinChatId, [])
-        }
 
-        // Join the chat topic for P2P discovery
-        if (state.swarm) {
-          const topic = Buffer.from(joinChatId)
-          state.swarm.join(topic)
+          sendResponse(true, { chatId: joinChatId }, null, id)
+          sendEvent(RPC_COMMANDS.CHAT_JOINED, { chatId: joinChatId })
+        } catch (error) {
+          sendResponse(false, null, `Failed to join chat: ${error.message}`, id)
         }
-
-        sendResponse(true, { chatId: joinChatId }, null, id)
-        sendEvent(RPC_COMMANDS.CHAT_JOINED, { chatId: joinChatId })
         break
 
       case RPC_COMMANDS.LEAVE_CHAT:
         const leaveChatId = data.chatId
+        try {
+          // Leave the chat topic
+          if (state.swarm) {
+            const topic = b4a.from(leaveChatId, 'hex')
+            state.swarm.leave(topic)
+          }
 
-        // Leave the chat topic
-        if (state.swarm) {
-          const topic = Buffer.from(leaveChatId)
-          state.swarm.leave(topic)
+          // Clean up chat data
+          if (state.chats.has(leaveChatId)) {
+            const chat = state.chats.get(leaveChatId)
+            if (chat.autobase) {
+              await chat.autobase.close()
+            }
+            state.chats.delete(leaveChatId)
+            state.messages.delete(leaveChatId)
+          }
+
+          sendResponse(true, { chatId: leaveChatId }, null, id)
+          sendEvent(RPC_COMMANDS.CHAT_LEFT, { chatId: leaveChatId })
+        } catch (error) {
+          sendResponse(false, null, `Failed to leave chat: ${error.message}`, id)
         }
-
-        sendResponse(true, { chatId: leaveChatId }, null, id)
-        sendEvent(RPC_COMMANDS.CHAT_LEFT, { chatId: leaveChatId })
         break
 
       case RPC_COMMANDS.SEND_MESSAGE:
         const { chatId: messageChatId, content } = data
-        const message = {
-          id: 'msg-' + Date.now(),
-          content,
-          author: state.profile?.publicKey,
-          authorName: state.profile?.displayName,
-          timestamp: Date.now(),
-          type: 'text',
-          chatId: messageChatId
+        try {
+          const message = {
+            id: crypto.randomBytes(16).toString('hex'),
+            content,
+            author: state.profile?.publicKey,
+            authorName: state.profile?.displayName,
+            timestamp: Date.now(),
+            type: 'text',
+            chatId: messageChatId
+          }
+
+          if (!state.messages.has(messageChatId)) {
+            state.messages.set(messageChatId, [])
+          }
+          state.messages.get(messageChatId).push(message)
+
+          // Send message to autobase
+          await sendMessageToAutobase(messageChatId, message)
+
+          sendResponse(true, { messageId: message.id }, null, id)
+
+          // Echo the message back to show it in the UI
+          setTimeout(() => {
+            sendEvent(RPC_COMMANDS.MESSAGE_RECEIVED, message)
+          }, 100)
+        } catch (error) {
+          sendResponse(false, null, `Failed to send message: ${error.message}`, id)
         }
-
-        if (!state.messages.has(messageChatId)) {
-          state.messages.set(messageChatId, [])
-        }
-        state.messages.get(messageChatId).push(message)
-
-        // Broadcast message to connected peers
-        broadcastMessageToPeers(message)
-
-        sendResponse(true, { messageId: message.id }, null, id)
-
-        // Echo the message back to show it in the UI
-        setTimeout(() => {
-          sendEvent(RPC_COMMANDS.MESSAGE_RECEIVED, message)
-        }, 100)
         break
 
       case RPC_COMMANDS.CONNECT_PEER:

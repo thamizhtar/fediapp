@@ -1,0 +1,185 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>PearChat P2P Test</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 20px; }
+        .container { max-width: 600px; margin: 0 auto; }
+        .status { padding: 10px; margin: 10px 0; border-radius: 5px; }
+        .connected { background: #d4edda; color: #155724; }
+        .disconnected { background: #f8d7da; color: #721c24; }
+        .message { padding: 8px; margin: 5px 0; border-radius: 5px; background: #f8f9fa; }
+        .own-message { background: #007bff; color: white; text-align: right; }
+        input, button { padding: 10px; margin: 5px; }
+        #messages { height: 300px; overflow-y: auto; border: 1px solid #ccc; padding: 10px; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>PearChat P2P Test</h1>
+        
+        <div id="status" class="status disconnected">
+            Initializing P2P...
+        </div>
+        
+        <div>
+            <strong>Your ID:</strong> <span id="userId">Loading...</span><br>
+            <strong>Room:</strong> <span id="roomId">demo-p2p-room</span><br>
+            <strong>Peers:</strong> <span id="peerCount">0</span>
+        </div>
+        
+        <div id="messages"></div>
+        
+        <div>
+            <input type="text" id="messageInput" placeholder="Type a message..." style="width: 70%;">
+            <button onclick="sendMessage()" style="width: 25%;">Send</button>
+        </div>
+        
+        <div>
+            <button onclick="clearMessages()">Clear Messages</button>
+            <button onclick="clearPeers()">Clear Peers</button>
+            <button onclick="testMessage()">Test Message</button>
+        </div>
+    </div>
+
+    <script>
+        // Simple P2P test implementation
+        const storageKey = 'pearchat-p2p-network'
+        const peersKey = 'pearchat-p2p-peers'
+        let currentRoom = 'demo-p2p-room'
+        let userId = 'pk-test-' + Date.now().toString(36) + '-' + Math.random().toString(36).substr(2, 8)
+        
+        // Initialize
+        document.getElementById('userId').textContent = userId
+        document.getElementById('roomId').textContent = currentRoom
+        
+        // Register this peer
+        function registerPeer() {
+            const peers = JSON.parse(localStorage.getItem(peersKey) || '{}')
+            peers[userId] = {
+                id: userId,
+                publicKey: userId,
+                lastSeen: Date.now(),
+                room: currentRoom
+            }
+            localStorage.setItem(peersKey, JSON.stringify(peers))
+            updatePeerCount()
+        }
+        
+        // Update peer count
+        function updatePeerCount() {
+            const peers = JSON.parse(localStorage.getItem(peersKey) || '{}')
+            const activePeers = Object.values(peers).filter(peer => 
+                peer.room === currentRoom && 
+                peer.publicKey !== userId &&
+                Date.now() - peer.lastSeen < 10000
+            )
+            document.getElementById('peerCount').textContent = activePeers.length
+            
+            if (activePeers.length > 0) {
+                document.getElementById('status').className = 'status connected'
+                document.getElementById('status').textContent = `P2P Connected (${activePeers.length} peers)`
+            } else {
+                document.getElementById('status').className = 'status disconnected'
+                document.getElementById('status').textContent = 'P2P Ready (waiting for peers)'
+            }
+        }
+        
+        // Send message
+        function sendMessage() {
+            const input = document.getElementById('messageInput')
+            const content = input.value.trim()
+            if (!content) return
+            
+            const message = {
+                id: Date.now().toString() + '-' + Math.random().toString(36).substr(2, 9),
+                content: content,
+                author: userId,
+                authorName: 'Test User',
+                timestamp: Date.now(),
+                type: 'text',
+                chatId: currentRoom
+            }
+            
+            // Store message
+            const networkData = JSON.parse(localStorage.getItem(storageKey) || '{}')
+            if (!networkData[currentRoom]) {
+                networkData[currentRoom] = []
+            }
+            networkData[currentRoom].push(message)
+            localStorage.setItem(storageKey, JSON.stringify(networkData))
+            
+            // Display message
+            displayMessage(message, true)
+            input.value = ''
+            
+            console.log('Message sent:', message)
+        }
+        
+        // Display message
+        function displayMessage(message, isOwn = false) {
+            const messagesDiv = document.getElementById('messages')
+            const messageDiv = document.createElement('div')
+            messageDiv.className = 'message' + (isOwn ? ' own-message' : '')
+            messageDiv.innerHTML = `
+                <strong>${isOwn ? 'You' : message.authorName}:</strong> ${message.content}
+                <small>(${new Date(message.timestamp).toLocaleTimeString()})</small>
+            `
+            messagesDiv.appendChild(messageDiv)
+            messagesDiv.scrollTop = messagesDiv.scrollHeight
+        }
+        
+        // Listen for storage events
+        window.addEventListener('storage', (event) => {
+            console.log('Storage event:', event.key, event.newValue ? 'has data' : 'no data')
+            
+            if (event.key === storageKey && event.newValue) {
+                const networkData = JSON.parse(event.newValue)
+                const roomMessages = networkData[currentRoom] || []
+                const lastMessage = roomMessages[roomMessages.length - 1]
+                
+                if (lastMessage && lastMessage.author !== userId) {
+                    console.log('Received message from peer:', lastMessage)
+                    displayMessage(lastMessage, false)
+                }
+            } else if (event.key === peersKey) {
+                updatePeerCount()
+            }
+        })
+        
+        // Test functions
+        function clearMessages() {
+            localStorage.removeItem(storageKey)
+            document.getElementById('messages').innerHTML = ''
+        }
+        
+        function clearPeers() {
+            localStorage.removeItem(peersKey)
+            updatePeerCount()
+        }
+        
+        function testMessage() {
+            document.getElementById('messageInput').value = 'Test message from ' + userId.slice(-8)
+            sendMessage()
+        }
+        
+        // Enter key support
+        document.getElementById('messageInput').addEventListener('keypress', (e) => {
+            if (e.key === 'Enter') {
+                sendMessage()
+            }
+        })
+        
+        // Register peer periodically
+        registerPeer()
+        setInterval(registerPeer, 2000)
+        
+        // Initial status
+        setTimeout(() => {
+            updatePeerCount()
+        }, 1000)
+        
+        console.log('P2P Test initialized with ID:', userId)
+    </script>
+</body>
+</html>

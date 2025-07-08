@@ -13,16 +13,23 @@
     "clear": "expo start --clear"
   },
   "dependencies": {
+    "@expo/metro-runtime": "~5.0.4",
+    "autobase": "^7.13.3",
+    "b4a": "^1.6.7",
+    "corestore": "^7.4.5",
+    "events": "^3.3.0",
     "expo": "~53.0.17",
-    "expo-status-bar": "~2.2.3",
     "expo-constants": "^17.1.6",
     "expo-file-system": "^18.0.6",
+    "expo-status-bar": "~2.2.3",
+    "hyperbee": "^2.24.2",
+    "hyperdrive": "^13.0.1",
+    "hyperswarm": "^4.11.7",
     "react": "19.0.0",
+    "react-dom": "19.0.0",
     "react-native": "0.79.5",
     "react-native-bare-kit": "^0.8.1",
     "react-native-safe-area-context": "^5.4.0",
-    "b4a": "^1.6.7",
-    "events": "^3.3.0",
     "react-native-web": "^0.20.0"
   },
   "devDependencies": {

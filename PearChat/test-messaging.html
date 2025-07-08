@@ -1,0 +1,317 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>PearChat Messaging Test</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 20px; background: #f5f5f5; }
+        .container { max-width: 800px; margin: 0 auto; background: white; padding: 20px; border-radius: 10px; }
+        .status { padding: 15px; margin: 10px 0; border-radius: 8px; font-weight: bold; }
+        .connected { background: #d4edda; color: #155724; border: 1px solid #c3e6cb; }
+        .disconnected { background: #f8d7da; color: #721c24; border: 1px solid #f5c6cb; }
+        .info-panel { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin: 20px 0; }
+        .info-box { padding: 15px; background: #f8f9fa; border-radius: 8px; border: 1px solid #dee2e6; }
+        .messages { height: 300px; overflow-y: auto; border: 2px solid #dee2e6; padding: 15px; margin: 20px 0; background: #fafafa; }
+        .message { padding: 10px; margin: 8px 0; border-radius: 8px; }
+        .own-message { background: #007bff; color: white; text-align: right; margin-left: 20%; }
+        .peer-message { background: #e9ecef; color: #333; margin-right: 20%; }
+        .input-area { display: flex; gap: 10px; margin: 20px 0; }
+        input { flex: 1; padding: 12px; border: 2px solid #dee2e6; border-radius: 6px; font-size: 16px; }
+        button { padding: 12px 20px; background: #007bff; color: white; border: none; border-radius: 6px; cursor: pointer; font-size: 16px; }
+        button:hover { background: #0056b3; }
+        .debug { background: #fff3cd; border: 1px solid #ffeaa7; padding: 10px; margin: 10px 0; border-radius: 5px; font-family: monospace; font-size: 12px; }
+        .controls { display: flex; gap: 10px; margin: 10px 0; }
+        .controls button { padding: 8px 15px; font-size: 14px; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🚀 PearChat Real-Time Messaging Test</h1>
+        
+        <div id="status" class="status disconnected">
+            Initializing P2P messaging system...
+        </div>
+        
+        <div class="info-panel">
+            <div class="info-box">
+                <h3>Your Identity</h3>
+                <strong>User ID:</strong> <span id="userId">Generating...</span><br>
+                <strong>Room:</strong> <span id="roomId">demo-p2p-room</span><br>
+                <strong>Connected Peers:</strong> <span id="peerCount">0</span>
+            </div>
+            <div class="info-box">
+                <h3>Network Status</h3>
+                <strong>Messages Sent:</strong> <span id="sentCount">0</span><br>
+                <strong>Messages Received:</strong> <span id="receivedCount">0</span><br>
+                <strong>Last Activity:</strong> <span id="lastActivity">None</span>
+            </div>
+        </div>
+        
+        <div class="controls">
+            <button onclick="testMessage()">Send Test Message</button>
+            <button onclick="clearAll()">Clear All Data</button>
+            <button onclick="simulatePeer()">Simulate Peer Message</button>
+            <button onclick="showDebugInfo()">Show Debug Info</button>
+        </div>
+        
+        <div id="messages" class="messages">
+            <div style="text-align: center; color: #666; font-style: italic;">
+                Messages will appear here. Open this page in another window to test real P2P!
+            </div>
+        </div>
+        
+        <div class="input-area">
+            <input type="text" id="messageInput" placeholder="Type your message here..." maxlength="500">
+            <button onclick="sendMessage()">Send Message</button>
+        </div>
+        
+        <div id="debug" class="debug" style="display: none;">
+            Debug info will appear here...
+        </div>
+    </div>
+
+    <script>
+        // P2P Messaging Test Implementation
+        const STORAGE_KEY = 'pearchat-p2p-network'
+        const PEERS_KEY = 'pearchat-p2p-peers'
+        const ROOM_ID = 'demo-p2p-room'
+        
+        let userId = 'pk-test-' + Date.now().toString(36) + '-' + Math.random().toString(36).substr(2, 8)
+        let sentCount = 0
+        let receivedCount = 0
+        let lastMessageId = null
+        
+        // Initialize UI
+        document.getElementById('userId').textContent = userId.slice(0, 20) + '...'
+        document.getElementById('roomId').textContent = ROOM_ID
+        
+        // Register this peer
+        function registerPeer() {
+            try {
+                const peers = JSON.parse(localStorage.getItem(PEERS_KEY) || '{}')
+                peers[userId] = {
+                    id: userId,
+                    publicKey: userId,
+                    lastSeen: Date.now(),
+                    room: ROOM_ID
+                }
+                localStorage.setItem(PEERS_KEY, JSON.stringify(peers))
+                updatePeerCount()
+                console.log('✅ Peer registered:', userId.slice(-8))
+            } catch (error) {
+                console.error('❌ Failed to register peer:', error)
+            }
+        }
+        
+        // Update peer count and status
+        function updatePeerCount() {
+            try {
+                const peers = JSON.parse(localStorage.getItem(PEERS_KEY) || '{}')
+                const now = Date.now()
+                const activePeers = Object.values(peers).filter(peer => 
+                    peer.room === ROOM_ID && 
+                    peer.publicKey !== userId &&
+                    now - peer.lastSeen < 8000
+                )
+                
+                const peerCount = activePeers.length
+                document.getElementById('peerCount').textContent = peerCount
+                
+                const statusEl = document.getElementById('status')
+                if (peerCount > 0) {
+                    statusEl.className = 'status connected'
+                    statusEl.textContent = `🟢 P2P Connected - ${peerCount} peer(s) online`
+                } else {
+                    statusEl.className = 'status disconnected'
+                    statusEl.textContent = '🟡 P2P Ready - Waiting for peers (open in another window)'
+                }
+                
+                console.log('👥 Active peers:', peerCount, activePeers.map(p => p.publicKey.slice(-8)))
+            } catch (error) {
+                console.error('❌ Failed to update peer count:', error)
+            }
+        }
+        
+        // Send message
+        function sendMessage() {
+            const input = document.getElementById('messageInput')
+            const content = input.value.trim()
+            if (!content) return
+            
+            const message = {
+                id: Date.now().toString() + '-' + Math.random().toString(36).substr(2, 9),
+                content: content,
+                author: userId,
+                authorName: 'You',
+                timestamp: Date.now(),
+                type: 'text',
+                chatId: ROOM_ID
+            }
+            
+            try {
+                // Store message in network
+                const networkData = JSON.parse(localStorage.getItem(STORAGE_KEY) || '{}')
+                if (!networkData[ROOM_ID]) {
+                    networkData[ROOM_ID] = []
+                }
+                networkData[ROOM_ID].push(message)
+                localStorage.setItem(STORAGE_KEY, JSON.stringify(networkData))
+                
+                // Display message locally
+                displayMessage(message, true)
+                
+                // Update counters
+                sentCount++
+                document.getElementById('sentCount').textContent = sentCount
+                document.getElementById('lastActivity').textContent = new Date().toLocaleTimeString()
+                
+                // Clear input
+                input.value = ''
+                
+                console.log('📤 Message sent:', message.id, content)
+                
+                // Force trigger storage event for cross-window communication
+                setTimeout(() => {
+                    window.dispatchEvent(new StorageEvent('storage', {
+                        key: STORAGE_KEY,
+                        newValue: JSON.stringify(networkData),
+                        oldValue: null,
+                        storageArea: localStorage
+                    }))
+                    console.log('📡 Storage event dispatched')
+                }, 50)
+                
+            } catch (error) {
+                console.error('❌ Failed to send message:', error)
+                alert('Failed to send message: ' + error.message)
+            }
+        }
+        
+        // Display message in UI
+        function displayMessage(message, isOwn = false) {
+            const messagesDiv = document.getElementById('messages')
+            
+            // Remove welcome message if present
+            if (messagesDiv.children.length === 1 && messagesDiv.children[0].style.textAlign === 'center') {
+                messagesDiv.innerHTML = ''
+            }
+            
+            const messageDiv = document.createElement('div')
+            messageDiv.className = 'message ' + (isOwn ? 'own-message' : 'peer-message')
+            messageDiv.innerHTML = `
+                <div style="font-weight: bold; margin-bottom: 5px;">
+                    ${isOwn ? 'You' : message.authorName || 'Peer'} 
+                    <small style="font-weight: normal; opacity: 0.7;">
+                        (${new Date(message.timestamp).toLocaleTimeString()})
+                    </small>
+                </div>
+                <div>${message.content}</div>
+            `
+            
+            messagesDiv.appendChild(messageDiv)
+            messagesDiv.scrollTop = messagesDiv.scrollHeight
+        }
+        
+        // Listen for storage events (cross-window P2P)
+        window.addEventListener('storage', (event) => {
+            console.log('📨 Storage event received:', event.key, event.newValue ? 'has data' : 'no data')
+            
+            if (event.key === STORAGE_KEY && event.newValue) {
+                try {
+                    const networkData = JSON.parse(event.newValue)
+                    const roomMessages = networkData[ROOM_ID] || []
+                    
+                    // Find new messages from other peers
+                    roomMessages.forEach(message => {
+                        if (message.author !== userId && message.id !== lastMessageId) {
+                            console.log('📥 Received peer message:', message.id, message.content)
+                            displayMessage(message, false)
+                            receivedCount++
+                            document.getElementById('receivedCount').textContent = receivedCount
+                            document.getElementById('lastActivity').textContent = new Date().toLocaleTimeString()
+                            lastMessageId = message.id
+                        }
+                    })
+                } catch (error) {
+                    console.error('❌ Failed to process incoming message:', error)
+                }
+            } else if (event.key === PEERS_KEY) {
+                updatePeerCount()
+            }
+        })
+        
+        // Test functions
+        function testMessage() {
+            document.getElementById('messageInput').value = 'Test message from ' + userId.slice(-8) + ' at ' + new Date().toLocaleTimeString()
+            sendMessage()
+        }
+        
+        function clearAll() {
+            localStorage.removeItem(STORAGE_KEY)
+            localStorage.removeItem(PEERS_KEY)
+            document.getElementById('messages').innerHTML = '<div style="text-align: center; color: #666; font-style: italic;">All data cleared. Messages will appear here.</div>'
+            sentCount = 0
+            receivedCount = 0
+            document.getElementById('sentCount').textContent = '0'
+            document.getElementById('receivedCount').textContent = '0'
+            document.getElementById('lastActivity').textContent = 'None'
+            updatePeerCount()
+            console.log('🧹 All data cleared')
+        }
+        
+        function simulatePeer() {
+            const peerMessage = {
+                id: Date.now().toString() + '-sim-' + Math.random().toString(36).substr(2, 6),
+                content: 'Simulated message from peer at ' + new Date().toLocaleTimeString(),
+                author: 'pk-simulated-peer-' + Math.random().toString(36).substr(2, 8),
+                authorName: 'Simulated Peer',
+                timestamp: Date.now(),
+                type: 'text',
+                chatId: ROOM_ID
+            }
+            
+            displayMessage(peerMessage, false)
+            receivedCount++
+            document.getElementById('receivedCount').textContent = receivedCount
+            console.log('🤖 Simulated peer message:', peerMessage.content)
+        }
+        
+        function showDebugInfo() {
+            const debugDiv = document.getElementById('debug')
+            const networkData = localStorage.getItem(STORAGE_KEY)
+            const peersData = localStorage.getItem(PEERS_KEY)
+            
+            debugDiv.innerHTML = `
+                <h4>Debug Information:</h4>
+                <strong>Network Data:</strong><br>
+                <pre>${networkData ? JSON.stringify(JSON.parse(networkData), null, 2) : 'No data'}</pre>
+                <strong>Peers Data:</strong><br>
+                <pre>${peersData ? JSON.stringify(JSON.parse(peersData), null, 2) : 'No data'}</pre>
+                <strong>Current User:</strong> ${userId}<br>
+                <strong>Room:</strong> ${ROOM_ID}<br>
+                <strong>Browser:</strong> ${navigator.userAgent}
+            `
+            debugDiv.style.display = debugDiv.style.display === 'none' ? 'block' : 'none'
+        }
+        
+        // Enter key support
+        document.getElementById('messageInput').addEventListener('keypress', (e) => {
+            if (e.key === 'Enter') {
+                sendMessage()
+            }
+        })
+        
+        // Initialize
+        registerPeer()
+        setInterval(registerPeer, 2000)
+        setInterval(updatePeerCount, 1000)
+        
+        // Initial status update
+        setTimeout(updatePeerCount, 500)
+        
+        console.log('🚀 PearChat messaging test initialized')
+        console.log('👤 User ID:', userId)
+        console.log('🏠 Room:', ROOM_ID)
+        console.log('💡 Open this page in another window to test P2P messaging!')
+    </script>
+</body>
+</html>
